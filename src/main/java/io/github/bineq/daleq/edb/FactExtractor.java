@@ -1,0 +1,525 @@
+package io.github.bineq.daleq.edb;
+
+import com.google.common.base.Preconditions;
+import io.github.bineq.daleq.*;
+import org.apache.commons.cli.*;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Handle;
+import org.objectweb.asm.tree.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.File;
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+/**
+ * Extracts facts from bytecode.
+ * Facts are stored in map associating table (predicate) names with records.
+ * @author jens dietrich
+ */
+public class FactExtractor   {
+
+    // sort members to make order predictable
+    public static final Comparator<FieldNode> FIELD_COMP = Comparator.comparing(fn -> fn.name);
+    public static final Comparator<AnnotationNode> ANNOTATION_COMP = Comparator.comparing(an -> an.desc);
+    public static final Comparator<MethodNode> METHOD_NODE_COMPARATOR = Comparator.comparing(mn -> mn.name + mn.desc);
+    public static final Logger LOG = LoggerFactory.getLogger(FactExtractor.class);
+    public static final String INFERRED_INSTRUCTION_PREDICATE_SPECS = "inferred-instruction-predicates";
+    public static final Map<Integer,InstructionPredicateFactFactory> FACT_FACTORIES = new HashMap<>();
+
+    // by inserting gaps, rules can insert additional instructions
+    public static final int INSTRUCTION_COUNTER_STEP_SIZE = 100;
+
+    // interestingly there are cases with - in the package name -- see issue 33a
+    // such as org/apache/curator-test/shaded/com/google/common/cache/CacheBuilder$3
+    public static final Pattern INNER_ANO_CLASS_PATTERN = Pattern.compile("(\\w|\\-)+(\\/(\\w|\\-|\\$)+)*\\$\\d+");
+
+    public static class LabelMap {
+        Set<LabelNode> accessedKeys = new HashSet<>();
+        Map<LabelNode,String> nodeToIntermediateLabelMap = new IdentityHashMap<>();
+        Map<LabelNode,String> intermediateToFinalLabelMap = new IdentityHashMap<>();
+        private AtomicInteger labelCounter1 = new AtomicInteger(-1);
+        private AtomicInteger labelCounter2 = new AtomicInteger(-1);
+
+        // this means that the nodes are actually being consumed
+        // not create the final label, labelCounter2 skips any labels that are never used
+        public String get(LabelNode key) {
+            accessedKeys.add(key);
+            return intermediateToFinalLabelMap.computeIfAbsent(key, k -> {
+                String iL = nodeToIntermediateLabelMap.get(key);
+                assert iL != null;
+                return "L"+labelCounter2.incrementAndGet();
+            });
+        }
+        public String put(LabelNode key) {
+            return nodeToIntermediateLabelMap.put(key,"iL"+labelCounter1.incrementAndGet());
+        }
+    }
+
+    static {
+
+        LOG.info("Loading instruction predicate fact factories");
+        ServiceLoader<InstructionPredicateFactFactory> factories = ServiceLoader.load(InstructionPredicateFactFactory.class);
+        for (InstructionPredicateFactFactory factory : factories) {
+            EDBInstructionPredicate predicate = factory.getPredicate();
+            try {
+                factory.verify();
+            }
+            catch (Exception x) {
+                LOG.error("Failed to verify fact factory", x);
+                System.exit(1);
+            }
+            FACT_FACTORIES.put(predicate.getOpCode(), factory);
+        }
+        LOG.info(""+FACT_FACTORIES.size() + " instruction predicate fact factories loaded");
+    }
+
+    public static Option OPT_CLASSLOC = Option.builder()
+        .argName("classes")
+        .option("cl")
+        .hasArg()
+        .required(true)
+        .desc("the location of compiled classes, a jar file or folder")
+        .build();
+
+    public static Option OPT_DB = Option.builder()
+        .argName("souffle")
+        .option("s")
+        .hasArg()
+        .required(true)
+        .desc("a file where to create the souffle program (.souffle file) containing imports and input predicate declarations")
+        .build();
+
+    public static Option OPT_FACTS = Option.builder()
+        .argName("facts")
+        .option("f")
+        .hasArg()
+        .required(true)
+        .desc("a folder where to create the extension database (input .facts files), the folder will be created if it does not exist")
+        .build();
+
+    public static Option OPT_VERIFY = Option.builder()
+        .argName("verify")
+        .option("v")
+        .hasArg(false)
+        .required(false)
+        .desc("whether to verify the datalog facts against the schema, must be true or false, default is true")
+        .build();
+
+    public static void main(String[] args) throws Exception {
+
+        Options options = new Options();
+        options.addOption(OPT_CLASSLOC);
+        options.addOption(OPT_DB);
+        options.addOption(OPT_FACTS);
+        options.addOption(OPT_VERIFY);
+        CommandLine cli = null;
+        CommandLineParser parser = new DefaultParser();
+
+        try {
+            cli = parser.parse(options, args);
+            String edbDefFileName = cli.getOptionValue(OPT_DB);
+            String factsFolderName = cli.getOptionValue(OPT_FACTS);
+            String classLocation = cli.getOptionValue(OPT_CLASSLOC);
+            boolean verify = true;
+            if (cli.hasOption(OPT_VERIFY)) {
+                verify = Boolean.valueOf(cli.getOptionValue(OPT_VERIFY));
+            }
+
+            extractAndExport(Path.of(classLocation),Path.of(edbDefFileName),Path.of(factsFolderName),verify);
+
+        } catch (ParseException e) {
+            HelpFormatter formatter = new HelpFormatter();
+            formatter.printHelp("java -cp <path-to-built-jar> " + FactExtractor.class.getName(), options);
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+
+    public static void extractAndExport (Path classPath, Path dbDef, Path factDir, boolean verify) throws Exception {
+
+        LOG.info("extracting classes from {}", classPath);
+        List<Path> classFiles = Utils.getClassFiles(classPath);
+        LOG.info("{} class files extracted", classFiles.size());
+
+        List<Fact> allFacts = new ArrayList<>();
+        List<Fact> currentFacts = new ArrayList<>();
+
+        for (Path classFile : classFiles) {
+            currentFacts.clear();
+            byte[] bytes = Files.readAllBytes(classFile);
+            currentFacts = extract(bytes,verify);
+            LOG.info("reading {}",classFile);
+            LOG.info("{} facts created",currentFacts.size());
+            allFacts.addAll(currentFacts);
+        }
+
+        if (!Files.exists(factDir)) {
+            LOG.info("creating folder: {}", factDir);
+            Files.createDirectories(factDir);
+        }
+        if (!Files.exists(dbDef.getParent())) {
+            LOG.info("creating folder: {}", dbDef.getParent());
+            Files.createDirectories(dbDef.getParent());
+        }
+
+        // write db
+
+        // sort facts by predicate
+        Map<Predicate,List<Fact>> factsByPredicate = new HashMap<>();
+        for (Fact fact:allFacts) {
+            Predicate predicate = fact.predicate();
+            List<Fact> facts = factsByPredicate.computeIfAbsent(predicate, k -> new ArrayList<>());
+            facts.add(fact);
+        }
+
+        // lines of predicate definitions and imports
+
+        // generate fact files
+        for (Predicate predicate : EDBPredicateRegistry.ALL) {
+            List<Fact> facts = factsByPredicate.get(predicate);
+            if (facts == null) {
+                facts = new ArrayList<>();
+            }
+            List<String> factRecords = facts.stream()
+                .map(fact -> fact.asSouffleFact())
+                .collect(Collectors.toList());
+
+            // comments makes sure that the fact file is written even if there are no facts
+            // factRecords.add(0,"// facts for predicate " + predicate.getName());
+
+            Path factFile = factDir.resolve(predicate.asSouffleFactFileNameWithExtension());
+            Files.write(factFile, factRecords);
+            LOG.debug("facts written to: {}",factFile.toFile().getAbsolutePath());
+        }
+        LOG.info("facts written to: {}",factDir.toFile().getAbsolutePath());
+
+        // generate imports for the predicates where we have facts
+        // generate declarations for all predicates available (as they are used in rule sets)
+        List<String> dbMain = new ArrayList<>();
+        for (Predicate predicate : EDBPredicateRegistry.ALL) {
+            dbMain.add(predicate.asSouffleDecl());
+            dbMain.add(predicate.asSouffleFactImportStatement());
+            dbMain.add("");
+        }
+
+        Files.write(dbDef,dbMain);
+        LOG.info("database definition written to: {}",dbDef.toFile().getAbsolutePath());
+
+    }
+
+    public static String getMethodReference(String className, String methodName,String descriptor) {
+        return className + "::" + methodName + descriptor;
+    }
+
+    static String getFieldReference(String className, String fieldName,String descriptor) {
+        // need to seperate field name and descriptor somehow
+        return className + "::" + fieldName + '(' + descriptor;
+    }
+
+    public static List<Fact> extract (byte[] bytes, boolean verify) throws VerificationException {
+        ClassNode classNode = new ClassNode();
+        new ClassReader(bytes).accept(classNode, 0);
+        List<Fact> facts = new ArrayList<>();
+
+        facts.add(new SimpleFact(EDBAdditionalPredicates.SUPERCLASS, FactIdGenerator.nextId(EDBAdditionalPredicates.SUPERCLASS),classNode.name, classNode.superName));
+        for (String intrf : classNode.interfaces) {
+            facts.add(new SimpleFact(EDBAdditionalPredicates.INTERFACE, FactIdGenerator.nextId(EDBAdditionalPredicates.INTERFACE),classNode.name, intrf));
+        }
+
+        facts.add(new SimpleFact(EDBAdditionalPredicates.CLASS_SIGNATURE,FactIdGenerator.nextId(EDBAdditionalPredicates.CLASS_SIGNATURE),classNode.name, classNode.signature));
+        facts.add(new SimpleFact(EDBAdditionalPredicates.VERSION,FactIdGenerator.nextId(EDBAdditionalPredicates.VERSION),classNode.name,classNode.version));
+        facts.add(new SimpleFact(EDBAdditionalPredicates.ACCESS,FactIdGenerator.nextId(EDBAdditionalPredicates.ACCESS),classNode.name,classNode.access));
+
+
+        if (INNER_ANO_CLASS_PATTERN.matcher(classNode.name).matches()) {
+            facts.add(new SimpleFact(EDBAdditionalPredicates.IS_ANOINNERCLASS,FactIdGenerator.nextId(EDBAdditionalPredicates.IS_ANOINNERCLASS),classNode.name));
+        }
+
+        // annotations
+        addAnnotationFacts(classNode.visibleAnnotations,facts,classNode.name);
+        addAnnotationFacts(classNode.visibleTypeAnnotations,facts,classNode.name);
+
+        // fields
+        classNode.fields.stream().sorted((FIELD_COMP)).forEach(fieldNode -> {
+            String fieldId = getFieldReference(classNode.name,fieldNode.name,fieldNode.desc);
+            facts.add(new SimpleFact(EDBAdditionalPredicates.FIELD,FactIdGenerator.nextId(EDBAdditionalPredicates.FIELD), fieldId,classNode.name, fieldNode.name,fieldNode.desc));
+            facts.add(new SimpleFact(EDBAdditionalPredicates.FIELD_SIGNATURE, FactIdGenerator.nextId(EDBAdditionalPredicates.FIELD_SIGNATURE), fieldId, fieldNode.signature));
+            facts.add(new SimpleFact(EDBAdditionalPredicates.ACCESS,FactIdGenerator.nextId(EDBAdditionalPredicates.ACCESS),fieldId,fieldNode.access));
+
+            // annotations
+            addAnnotationFacts(fieldNode.visibleAnnotations,facts,fieldId);
+            addAnnotationFacts(fieldNode.visibleTypeAnnotations,facts,fieldId);
+        });
+
+        // methods
+        classNode.methods.stream().sorted((METHOD_NODE_COMPARATOR)).forEach(methodNode -> {
+            AtomicInteger instructionCounter = new AtomicInteger(0);
+            String methodId = getMethodReference(classNode.name,methodNode.name,methodNode.desc);
+            facts.add(new SimpleFact(EDBAdditionalPredicates.METHOD, FactIdGenerator.nextId(EDBAdditionalPredicates.METHOD),methodId, classNode.name, methodNode.name, methodNode.desc));
+            facts.add(new SimpleFact(EDBAdditionalPredicates.METHOD_SIGNATURE,FactIdGenerator.nextId(EDBAdditionalPredicates.METHOD_SIGNATURE),methodId, methodNode.signature));
+            facts.add(new SimpleFact(EDBAdditionalPredicates.ACCESS,FactIdGenerator.nextId(EDBAdditionalPredicates.ACCESS),methodId,methodNode.access));
+
+            // first iteration to collect labels
+            final LabelMap labelMap = new LabelMap();
+            for (AbstractInsnNode instructionNode:methodNode.instructions) {
+                // TODO: label nodes, frame nodes, line NUMBER nodes
+                instructionCounter.incrementAndGet(); // for debugging
+                int opCode = instructionNode.getOpcode();
+                String instr = InstructionTable.getInstruction(opCode);
+                if (instr == null) {
+                    if (instructionNode instanceof LabelNode labelNode) {
+                        LOG.debug("label: " + labelNode);
+                        String value = labelMap.put(labelNode);
+                        assert value == null; // should not override already created label tag
+                    }
+                }
+            }
+
+            // second iteration to simulate building facts and check which labels are used
+            instructionCounter.set(0); // reset !
+            for (AbstractInsnNode instructionNode:methodNode.instructions) {
+                // TODO deal with pseudo nodes
+                int opCode = instructionNode.getOpcode();
+                String instr = InstructionTable.getInstruction(opCode);
+                if (instr != null) {
+                    int instCounter = instructionCounter.incrementAndGet();
+
+                    EDBInstructionPredicate predicate = findPredicate(opCode,instr,instructionNode.getClass());
+                    assert predicate != null;
+                    try {
+                        createFact(predicate, INSTRUCTION_COUNTER_STEP_SIZE*instCounter, methodId, instructionNode,labelMap);
+                        // do not add fact, this is only to see which labels are used by factories !
+                    }
+                    catch (Exception x) {
+                        LOG.error("Fact generation has failed",x);
+                    }
+                }
+            };
+
+           // assert labelMap.keySet().equals(labelMap.accessedKeys);
+
+            // third iteration to actually build and collect facts
+            instructionCounter.set(0); // reset !
+            for (AbstractInsnNode instructionNode:methodNode.instructions) {
+                // TODO deal with pseudo nodes
+                int opCode = instructionNode.getOpcode();
+                String instr = InstructionTable.getInstruction(opCode);
+                if (instr == null) {
+                    if (instructionNode instanceof LabelNode labelNode && labelMap.accessedKeys.contains(labelNode)) {
+                        Predicate predicate = EDBAdditionalPredicates.LABEL;
+                        String factId = FactIdGenerator.nextId(predicate);
+                        int instCounter = instructionCounter.incrementAndGet();
+                        //new Object[]{factId,methodRef,instructionCounter,labelMap.get(node.label)});
+                        Fact fact = new SimpleFact(predicate,factId,methodId,INSTRUCTION_COUNTER_STEP_SIZE*instCounter,labelMap.get(labelNode));
+                        facts.add(fact);
+                    }
+                    else {
+                        LOG.debug("unknown instruction type found, opcode is {}", opCode);
+                    }
+                }
+                else {
+                    int instCounter = instructionCounter.incrementAndGet();
+
+                    // find predicate
+                    EDBInstructionPredicate predicate = findPredicate(opCode,instr,instructionNode.getClass());
+                    assert predicate != null;
+
+                    // create fact
+                    try {
+                        Fact fact = createFact(predicate, INSTRUCTION_COUNTER_STEP_SIZE*instCounter, methodId, instructionNode,labelMap);
+                        //assert fact != null;
+                        facts.add(fact);
+                    }
+                    catch (Exception x) {
+                        LOG.error("Fact generation has failed",x);
+                    }
+                }
+            };
+
+            // annotations
+            addAnnotationFacts(methodNode.visibleAnnotations,facts,methodId);
+            addAnnotationFacts(methodNode.visibleTypeAnnotations,facts,methodId);
+
+        });
+
+
+        if (verify) {
+            LOG.info("verifying facts");
+            for (Fact fact : facts) {
+                fact.verify();
+            }
+        }
+        return facts;
+    }
+
+    private static void addAnnotationFacts(List<? extends AnnotationNode> annotationNodes, List<Fact> facts,String classname) {
+        if (annotationNodes==null) return;
+        annotationNodes.stream().sorted(ANNOTATION_COMP).forEach(annoNode -> {
+            String desc = annoNode.desc;
+            // Each name value pair is stored as two consecutive elements in the list.
+            // https://asm.ow2.io/javadoc/org/objectweb/asm/tree/AnnotationNode.html
+            List<Object> values = annoNode.values;
+            String args = "";
+            if (values != null) {
+                assert values.size() % 2 == 0;
+//              Map<String, String> map = new TreeMap<>(); // normalise order
+//              for (int i = 0; i < values.size(); i = i + 2) {
+//                  String key = values.get(i).toString();
+//                  Object value = values.get(i + 1);
+//                  String sValue = value == null ? "null" : stringifyAnnotationValue(value);
+//                  map.put(key, sValue);
+//              }
+//              args = map.keySet().stream().map(k -> k+" -> "+map.get(k)).collect(Collectors.joining(","));
+                args = stringifyAnnotationValues(values);
+            }
+            // specific arguments for type annotations
+            boolean isTypeAnnotation = annoNode instanceof TypeAnnotationNode;
+            String typePath = isTypeAnnotation ? getTypePath((TypeAnnotationNode)annoNode) : "";
+            int typeRef = isTypeAnnotation ? ((TypeAnnotationNode)annoNode).typeRef : -1;
+            facts.add(new SimpleFact(EDBAdditionalPredicates.ANNOTATION,FactIdGenerator.nextId(EDBAdditionalPredicates.ANNOTATION),classname,desc,args,typePath,typeRef));
+        });
+    }
+
+    private static String stringifyAnnotationValues(Object value) {
+        if (value==null) {
+            return "null";
+        }
+        else if (value.getClass().isArray()) {
+            Object[] arr = (Object[]) value;
+            return Stream.of(arr)
+                .map(FactExtractor::stringifyAnnotationValues)
+                .collect(Collectors.joining(",","[","]"));
+        }
+        else if (value instanceof List) {
+            List<Object> list = (List) value;
+            return list.stream()
+                .map(FactExtractor::stringifyAnnotationValues)
+                .collect(Collectors.joining(",","[","]"));
+        }
+        else if (value instanceof AnnotationNode node) {
+            return "AnnotationNode(descr -> " + node.desc + " , values -> " + stringifyAnnotationValues(node.values) +")";
+        }
+        else  {
+            return value.toString();
+        }
+    }
+
+    private static String getTypePath(TypeAnnotationNode node) {
+        return node.typePath==null ? "" : node.typePath.toString();
+    }
+
+    private static Fact createFact(EDBInstructionPredicate predicate, int instCounter, String methodId, AbstractInsnNode instructionNode, LabelMap labelMap) {
+        InstructionPredicateFactFactory factory = FACT_FACTORIES.get(predicate.getOpCode());
+        Preconditions.checkNotNull(factory,"no fact factory found for instruction " + predicate.getName());
+        String factId = FactIdGenerator.nextId(predicate);
+        return factory.createFact(factId,instructionNode,methodId,instCounter,labelMap);
+    }
+
+    private static EDBInstructionPredicate findPredicate(int opCode, String instr, Class<? extends AbstractInsnNode> aClass) {
+        EDBInstructionPredicate predicate = EDBPredicateRegistry.INSTRUCTION_PREDICATES.get(opCode);
+        if (predicate == null) {
+            predicate = new EDBInstructionPredicate();
+            predicate.setId(createUUID());
+            predicate.setOpCode(opCode);
+            predicate.setName(instr);
+            predicate.setAsmNodeType(aClass.getName());
+            List<Slot> slots = new ArrayList<>();
+            slots.add(Slot.symslot(Fact.ID_SLOT_NAME));
+            slots.add(Slot.symslot("methodid"));
+            slots.add(Slot.numslot("instructioncounter",Integer.TYPE.getName()));
+
+            try {
+                Field[] fields = aClass.getDeclaredFields();
+                Arrays.sort(fields,Comparator.comparing(Field::getName));
+                for (Field field : fields) {
+                    if (Modifier.isPublic(field.getModifiers())) {
+                        Class cl = field.getType();
+                        SlotType slotType = null;
+                        String jSlotType = getClassName(cl);
+                        boolean addSingle = true;
+
+                        // deep access for properties of special types
+                        if (cl== Handle.class) {
+                            addSingle = false;
+                            slots.add(new Slot(field.getName()+".getOwner()", SlotType.SYMBOL, String.class.getName()));
+                            slots.add(new Slot(field.getName()+".getName()", SlotType.SYMBOL, String.class.getName()));
+                            slots.add(new Slot(field.getName()+".getDesc()", SlotType.SYMBOL, String.class.getName()));
+                            slots.add(new Slot(field.getName()+".getTag()", SlotType.NUMBER, Integer.TYPE.getName()));
+                            slots.add(new Slot(field.getName()+".isInterface()", SlotType.NUMBER, Boolean.TYPE.getName()));
+                        }
+                        else if (Number.class.isAssignableFrom(cl)) {
+                            slotType = SlotType.NUMBER;
+                        }
+                        else if (Boolean.class.isAssignableFrom(cl)) {
+                            slotType = SlotType.NUMBER;
+                        }
+                        else if (String.class.isAssignableFrom(cl)) {
+                            slotType = SlotType.SYMBOL;
+                        }
+                        else if (cl == Integer.TYPE || cl == Long.TYPE || cl == Short.TYPE || cl == Byte.TYPE || cl == Boolean.TYPE ) {
+                            slotType = SlotType.NUMBER;
+                        }
+                        else if (cl == Double.TYPE || cl == Float.TYPE ) {
+                            slotType = SlotType.FLOAT;
+                        }
+                        else if (cl.isArray()) {
+                            slotType = SlotType.SYMBOL; // serialized as list
+                        }
+                        else {
+                            LOG.warn("Mapping slot type {} to SYMBOL",cl);
+                            slotType = SlotType.SYMBOL;
+                        }
+                        if (addSingle) {
+                            Slot slot = new Slot(field.getName(), slotType, jSlotType);
+                            slots.add(slot);
+                        }
+                    }
+                }
+
+            }
+            catch (Exception x) {
+                LOG.error("Error inferring slots for class "+aClass.getName(),x);
+            }
+
+
+            predicate.setSlots(slots.stream().toArray(Slot[]::new));
+
+            // make persistent
+            File dir = new File(INFERRED_INSTRUCTION_PREDICATE_SPECS);
+            if (!dir.exists()) {
+                dir.mkdirs();
+                LOG.info("Created folder for inferred instruction predicate specs: {}", dir.getAbsolutePath());
+            }
+            File spec = new File(dir,instr+".json");
+            try {
+                predicate.toJson(spec);
+                LOG.info("Written inferred instruction predicate spec to file {}, verify and copy to resources to use in the future", spec.getAbsolutePath());
+            } catch (IOException x) {
+                LOG.error("Error writing inferred instruction predicate spec file", x);
+            }
+        }
+        return predicate;
+    }
+
+    private static String getClassName(Class cl) {
+        if (cl.isArray()) {
+            return getClassName(cl.getComponentType())+"[]";
+        }
+        else return cl.getName();
+
+    }
+
+    private static String createUUID() {
+        return UUID.randomUUID().toString();
+    }
+}
