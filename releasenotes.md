@@ -1,0 +1,70 @@
+# Release Notes
+
+## 1.5.1
+
+- maintenance: updated dependencies
+
+## 1.5.0
+
+- new rule added, see [issue 109](https://github.com/binaryeq/daleq/issues/109) for details
+
+## 1.4.1
+
+- fixed [issue 107](https://github.com/binaryeq/daleq/issues/107) - removed incorrect assertions
+- multiple updated dependencies in pom
+- **release build failed !**
+
+## 1.4.0
+
+- fixed [issue 54](https://github.com/binaryeq/daleq/issues/54) -- reports can now be moved to different folders
+- multiple updated dependencies in pom and workflows
+
+## 1.3.3
+
+- multiple updated dependencies in pom and workflows
+
+## 1.3.2
+
+- fixed release action setup (pom)
+
+## 1.3.1
+
+- fixed release action
+
+## 1.3.0
+
+- multiple updated dependencies
+- started automated released with this version
+
+## 1.2.3
+
+- fixed code scanning alert #1
+
+## 1.2.2
+
+- fixed code scanning alert #2
+
+## 1.2.1
+
+- added explanation for why the source code of inner classes is not (directly) analysed and compared, see issue #43
+
+## 1.2.0
+
+- added CLI parameter to use DALEQ with either sound rules only, soundy (and sound) rules, or both
+
+## 1.1.1
+
+- fixed minor bug -- assertion in CLI Main
+
+## 1.1.0
+
+- added CLI exit codes
+- CLI now has an `-autoopen` option, only if this is used the generated report is opened at the end
+- support for `FREM` instruction added
+- minor bugfixes
+- fixed issue #31 -- support for anonymous inner classes within inner classes, will increase equivalences
+- code for evaluation experiments moved to [separate project](https://github.com/binaryeq/daleq-evaluation/)
+
+## 1.0.0
+
+Initial Release

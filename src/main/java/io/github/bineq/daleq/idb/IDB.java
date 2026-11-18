@@ -1,0 +1,318 @@
+package io.github.bineq.daleq.idb;
+
+import io.github.bineq.daleq.Fact;
+import io.github.bineq.daleq.SimpleFact;
+import io.github.bineq.daleq.Slot;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * An internal representation of the IDB itself generated for a given method.
+ * This is organised by a set of global facts, and instruction facts organised by method.
+ * This is an utility to compare generated IDBs for equivalence.
+ * @author jens dietrich
+ */
+public class IDB {
+
+    // used during normalisation
+    public static final String REMOVED_ID_VALUE = "projected";
+    public static final int REMOVED_INSTRUCTION_COUNTER_VALUE = -1;
+
+    static final Comparator<Fact> COMPARE_BY_SLOT_1 = Comparator.comparing(f -> f.values()[1].toString());
+    static final Comparator<Fact> COMPARE_BY_PREDICATE_NAME = Comparator.comparing(f -> f.predicate().getName());
+    static final Comparator<Fact> COMPARE_INSTRUCTION_FACTS_BY_POSITION = Comparator.comparingInt(f -> ((Integer) f.values()[2]));
+    static final Comparator<Fact> COMPARE_ANNOTATION_FACTS_BY_ANNOTATION_TYPE = Comparator.comparing(f -> ((String) f.values()[2]));
+
+    Fact classSuperclassFact = null;
+    Fact classSignatureFact = null;
+    Fact bytecodeVersionFact = null;
+    List<Fact> classInterfaceFacts = new ArrayList<>();
+    Set<Fact> classAnnotationFacts = new TreeSet<>(COMPARE_ANNOTATION_FACTS_BY_ANNOTATION_TYPE);
+    Fact classRawAccessFact = null; // raw, value is single fact for all int-encoded access flags
+    Set<Fact> classAccessFacts = new TreeSet<>(COMPARE_BY_PREDICATE_NAME);
+
+    Set<Fact> methodFacts = new TreeSet<>(COMPARE_BY_SLOT_1);
+    Set<Fact> fieldFacts = new TreeSet<>(COMPARE_BY_SLOT_1);
+
+    Set<Fact> removedMethodFacts = new TreeSet<>(COMPARE_BY_SLOT_1);
+    Set<Fact> removedFieldFacts = new TreeSet<>(COMPARE_BY_SLOT_1);
+
+    Map<String,Set<Fact>> removedInstructionFacts = new HashMap<>();
+    Map<String,Set<Fact>> movedInstructionFacts = new HashMap<>();
+
+    Map<String,Fact> methodRawAccessFacts = new HashMap<>(); // raw, value is single fact for all int-encoded access flags
+    Map<String,Set<Fact>> methodAccessFacts = new HashMap<>();
+    Map<String,Fact> methodSignatureFacts = new HashMap<>();
+    Map<String,Collection<Fact>> methodInstructionFacts = new HashMap<>();
+    Map<String,Set<Fact>> methodAnnotationFacts = new HashMap<>();
+
+    Map<String,Set<Fact>> fieldAccessFacts = new HashMap<>();
+    Map<String,Fact> fieldRawAccessFacts = new HashMap<>(); // raw, value is single fact for all int-encoded access flags
+    Map<String,Fact> fieldSignatureFacts = new HashMap<>();
+    Map<String,Set<Fact>> fieldAnnotationFacts = new HashMap<>();
+
+    public Fact getClassSuperclassFact() {
+        return classSuperclassFact;
+    }
+
+    public Fact getClassSignatureFact() {
+        return classSignatureFact;
+    }
+
+    public Fact getBytecodeVersionFact() {
+        return bytecodeVersionFact;
+    }
+
+    public List<Fact> getClassInterfaceFacts() {
+        return classInterfaceFacts;
+    }
+
+    public Fact getClassRawAccessFact() {
+        return classRawAccessFact;
+    }
+
+    public Set<Fact> getClassAccessFacts() {
+        return classAccessFacts;
+    }
+
+    public Set<Fact> getMethodFacts() {
+        return methodFacts;
+    }
+
+    // note that set is sorted so order is predictable
+    public List<Fact> getMethodFactsAsList() {
+        return methodFacts.stream().toList();
+    }
+
+    public Set<Fact> getFieldFacts() {
+        return fieldFacts;
+    }
+
+    // note that set is sorted so order is predictable
+    public List<Fact> getFieldFactsAsList() {
+        return fieldFacts.stream().toList();
+    }
+
+    public Set<Fact> getRemovedMethodFacts() {
+        return removedMethodFacts;
+    }
+
+    // note that set is sorted so order is predictable
+    public List<Fact> getRemovedMethodFactsAsList() {
+        return removedMethodFacts.stream().toList();
+    }
+
+    public Set<Fact> getRemovedFieldFacts() {
+        return removedFieldFacts;
+    }
+
+    public Map<String, Set<Fact>> getMethodAnnotationFacts() {
+        return methodAnnotationFacts;
+    }
+
+    public Map<String, Set<Fact>> getFieldAnnotationFacts() {
+        return fieldAnnotationFacts;
+    }
+
+    public Set<Fact> getClassAnnotationFacts() {
+        return classAnnotationFacts;
+    }
+
+    public Map<String, Set<Fact>> getMovedInstructionFacts() {
+        return movedInstructionFacts;
+    }
+
+    // note that set is sorted so order is predictable
+    public List<Fact> getRemovedFieldFactsAsList() {
+        return removedFieldFacts.stream().toList();
+    }
+    public Map<String, Fact> getMethodRawAccessFacts() {
+        return methodRawAccessFacts;
+    }
+
+    public Map<String, Set<Fact>> getMethodAccessFacts() {
+        return methodAccessFacts;
+    }
+
+    public Map<String, Fact> getMethodSignatureFacts() {
+        return methodSignatureFacts;
+    }
+
+    public Map<String, Collection<Fact>> getMethodInstructionFacts() {
+        return methodInstructionFacts;
+    }
+
+    // note that set is sorted so order is predictable
+    public List<Fact> getMethodInstructionFacts(String method) {
+        Collection<Fact> set = getMethodInstructionFacts().get(method);
+        return set==null?null:set.stream().toList();
+    }
+
+    // note that set is sorted so order is predictable
+    public List<Fact> getMethodRemovedInstructionFactsAsList(String method) {
+        Collection<Fact> set = getMethodInstructionFacts().get(method);
+        return set==null?null:set.stream().toList();
+    }
+
+    public Map<String, Set<Fact>> getFieldAccessFacts() {
+        return fieldAccessFacts;
+    }
+
+    public Map<String, Fact> getFieldRawAccessFacts() {
+        return fieldRawAccessFacts;
+    }
+
+    public Map<String, Fact> getFieldSignatureFacts() {
+        return fieldSignatureFacts;
+    }
+
+    public Map<String,Set<Fact>> getRemovedInstructionFacts() {
+        return removedInstructionFacts;
+    }
+
+    public Map<String,Set<Fact>> getMethodMovedInstructionFacts() {
+        return movedInstructionFacts;
+    }
+
+    public IDB project() {
+        IDB idb = new IDB();
+        idb.classSuperclassFact = project(this.classSuperclassFact);
+        idb.classSignatureFact = project(this.classSignatureFact);
+        idb.bytecodeVersionFact = project(this.bytecodeVersionFact);
+        idb.classInterfaceFacts = project(this.classInterfaceFacts);
+        idb.classRawAccessFact = project(this.classRawAccessFact);
+        idb.classAccessFacts = project(this.classAccessFacts);
+        idb.methodFacts = project(this.methodFacts);
+        idb.fieldFacts = project(this.fieldFacts);
+        idb.removedMethodFacts = Set.of();  // removed facts are only for provenance, ignore
+        idb.removedFieldFacts = Set.of();  // removed facts are only for provenance, ignore
+        idb.methodRawAccessFacts = project(this.methodRawAccessFacts);
+        idb.methodAccessFacts = project2(this.methodAccessFacts);
+        idb.methodSignatureFacts = project(this.methodSignatureFacts);
+        idb.fieldAccessFacts = project2(this.fieldAccessFacts);
+        idb.fieldRawAccessFacts = project(this.fieldRawAccessFacts);
+        idb.fieldSignatureFacts = project(this.fieldSignatureFacts);
+        idb.methodInstructionFacts = new HashMap<>();
+        idb.classAnnotationFacts = project(this.classAnnotationFacts);
+        idb.methodAnnotationFacts = project2(this.methodAnnotationFacts);
+        idb.fieldAnnotationFacts = project2(this.fieldAnnotationFacts);
+        for (String method:methodInstructionFacts.keySet()) {
+            Collection<Fact> facts = new ArrayList<>();
+            idb.methodInstructionFacts.put(method,facts);
+            for (Fact fact : methodInstructionFacts.get(method)) {
+                if (!fact.predicate().getName().startsWith("REMOVED_INSTRUCTION") && !fact.predicate().getName().startsWith("MOVED_INSTRUCTION")) {
+                    facts.add(projectInstructionFact(fact));
+                }
+            }
+        }
+
+        return idb;
+    }
+
+    private static List<Fact> project(List<Fact> facts) {
+        return facts.stream()
+            .map(fact -> project(fact))
+            .collect(Collectors.toUnmodifiableList());
+    }
+
+    private static Map<String,Fact> project(Map<String,Fact> facts) {
+        Map<String,Fact> map = new HashMap<>();
+        facts.keySet().stream()
+            .forEach(k -> {
+                map.put(k, project(facts.get(k)));
+            });
+        return map;
+    }
+
+    private static Map<String,Set<Fact>> project2(Map<String,Set<Fact>> facts) {
+        Map<String,Set<Fact>> map = new HashMap<>();
+        facts.keySet().stream()
+            .forEach(k -> {
+                map.put(k, project(facts.get(k)));
+            });
+        return map;
+    }
+
+    private static Set<Fact> project(Set<Fact> facts) {
+        // retain the order of facts -- this might be sorted
+        Set<Fact> set = new LinkedHashSet<>();
+        facts.stream()
+            .map(fact -> project(fact))
+            .forEach(set::add);
+        return set;
+    }
+
+    private static Fact project(Fact fact) {
+        Slot[] slots = fact.predicate().getSlots();
+        assert slots[0].name().equals("factid");
+        Object[] values = new Object[fact.values().length];
+        for (int i = 0; i < fact.values().length; i++) {
+            if (i==0) {
+                values[i] = REMOVED_ID_VALUE;  // set to standard
+            }
+            else {
+                values[i] = fact.values()[i];
+            }
+        }
+        return new SimpleFact(fact.predicate(), values);
+    }
+
+    private static Fact projectInstructionFact(Fact fact) {
+
+        // checks
+        assert fact.predicate().isInstructionPredicate();
+        Slot[] slots = fact.predicate().getSlots();
+        assert slots[0].name().equals("factid");
+        assert slots[2].name().equals("instructioncounter");
+
+        Object[] values = new Object[fact.values().length];
+        for (int i = 0; i < fact.values().length; i++) {
+            if (i==0) {
+                values[i] = REMOVED_ID_VALUE;  // set to standard
+            }
+            else if (i==2) {
+                values[i] = REMOVED_INSTRUCTION_COUNTER_VALUE;
+            }
+            else {
+                values[i] = fact.values()[i];
+            }
+        }
+
+        return new SimpleFact(fact.predicate(), values);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        IDB idb = (IDB) o;
+        return Objects.equals(classSuperclassFact, idb.classSuperclassFact) &&
+            Objects.equals(classSignatureFact, idb.classSignatureFact) &&
+            Objects.equals(bytecodeVersionFact, idb.bytecodeVersionFact) &&
+            Objects.equals(classInterfaceFacts, idb.classInterfaceFacts) &&
+            Objects.equals(classRawAccessFact, idb.classRawAccessFact) &&
+            Objects.equals(classAccessFacts, idb.classAccessFacts) &&
+            Objects.equals(methodFacts, idb.methodFacts) &&
+            Objects.equals(fieldFacts, idb.fieldFacts) &&
+            Objects.equals(removedMethodFacts, idb.removedMethodFacts) &&
+            Objects.equals(removedFieldFacts, idb.removedFieldFacts) &&
+            Objects.equals(removedInstructionFacts, idb.removedInstructionFacts) &&
+            Objects.equals(movedInstructionFacts, idb.movedInstructionFacts) &&
+            Objects.equals(methodRawAccessFacts, idb.methodRawAccessFacts) &&
+            Objects.equals(methodAccessFacts, idb.methodAccessFacts) &&
+            Objects.equals(methodSignatureFacts, idb.methodSignatureFacts) &&
+            Objects.equals(methodInstructionFacts, idb.methodInstructionFacts) &&
+            Objects.equals(fieldAccessFacts, idb.fieldAccessFacts) &&
+            Objects.equals(fieldRawAccessFacts, idb.fieldRawAccessFacts) &&
+            Objects.equals(fieldSignatureFacts, idb.fieldSignatureFacts) &&
+            Objects.equals(classAnnotationFacts, idb.classAnnotationFacts) &&
+            Objects.equals(methodAnnotationFacts, idb.methodAnnotationFacts) &&
+            Objects.equals(fieldAnnotationFacts, idb.fieldAnnotationFacts)
+            ;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(classSuperclassFact, classSignatureFact, bytecodeVersionFact, classInterfaceFacts, classRawAccessFact, classAccessFacts, methodFacts, fieldFacts, removedMethodFacts, removedFieldFacts, methodRawAccessFacts, methodAccessFacts, methodSignatureFacts, methodInstructionFacts, fieldAccessFacts, fieldRawAccessFacts, fieldSignatureFacts, classAnnotationFacts, methodAnnotationFacts, fieldAnnotationFacts);
+    }
+}
