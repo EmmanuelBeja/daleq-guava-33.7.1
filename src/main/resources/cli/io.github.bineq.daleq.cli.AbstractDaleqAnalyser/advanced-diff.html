@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+    <script>
+        var highlightedElement = null;
+        document.addEventListener('click', function(event) {
+            // remove old highlighted element
+            if (highlightedElement) {
+                highlightedElement.classList.remove('highlighted');
+                highlightedElement = null;
+            }
+            if (event.target.tagName === 'A') {
+                const href = event.target.getAttribute('href');
+                if (href && (href.startsWith('#') || href.startsWith(window.location.pathname))) {
+                    var target = href.substring(1);
+                    var element = document.getElementById(target);
+                    element = element.closest('.highlightable-link-target');
+                    if (element) {
+                        element.classList.add('highlighted');
+                        highlightedElement = element;
+                    }
+                }
+
+            }
+        });
+    </script>
+
+    <style>
+        body {
+            background-color: lightsteelblue;
+            font-family: "Lucida Console", "Courier New", monospace;
+        }
+        th {
+            background: #3572b0;
+            color: #e6edf3;
+            margin-left: 10rem;
+            padding-left: 10px;
+        }
+        td {
+            margin-left: 10rem;
+            padding-left: 10px;
+        }
+        table {
+            border-width: thin;
+            border-style: solid;
+            border-color: black;
+            table-layout: fixed;
+        }
+        .value {
+            font-style: italic;
+        }
+        .key {
+            text-align: right;
+            min-width: 150px;
+            max-width: 150px;
+        }
+        .highlighted {
+            background: #fdf2d0;
+        }
+        .derivation-level-0::before {
+            display: inline-block;
+            content: "";
+            width: 1rem;
+            height: 1rem;
+            margin: 0 1rem;
+            margin-left: 0rem;
+            transform: translateY(-0.25rem);
+        }
+        .derivation-level-1::before {
+            display: inline-block;
+            content: "";
+            border-left: .1rem solid black;
+            border-bottom: .1rem solid black;
+            width: 2rem;
+            height: 1rem;
+            margin: 0 1rem;
+            margin-left: 5rem;
+            transform: translateY(-0.25rem);
+        }
+        .derivation-level-2::before {
+            display: inline-block;
+            content: "";
+            border-left: .1rem solid black;
+            border-bottom: .1rem solid black;
+            width: 2rem;
+            height: 1rem;
+            margin: 0 1rem;
+            margin-left: 9rem;
+            transform: translateY(-0.25rem);
+        }
+        .derivation-level-3::before {
+            display: inline-block;
+            content: "";
+            border-left: .1rem solid black;
+            border-bottom: .1rem solid black;
+            width: 2rem;
+            height: 1rem;
+            margin: 0 1rem;
+            margin-left: 13rem;
+            transform: translateY(-0.25rem);
+        }
+        .derivation-level-4::before {
+            display: inline-block;
+            content: "";
+            border-left: .1rem solid black;
+            border-bottom: .1rem solid black;
+            width: 2rem;
+            height: 1rem;
+            margin: 0 1rem;
+            margin-left: 17rem;
+            transform: translateY(-0.25rem);
+        }
+        .derivation-level-5::before {
+            display: inline-block;
+            content: "";
+            border-left: .1rem solid black;
+            border-bottom: .1rem solid black;
+            width: 2rem;
+            height: 1rem;
+            margin: 0 1rem;
+            margin-left: 21rem;
+            transform: translateY(-0.25rem);
+        }
+
+        <!-- styles for rule listing -->
+        .datalog-rule {
+        }
+        .datalog-comment {
+            color: #6e7681;
+        }
+        .datalog-output {
+            color: #3545b0;x
+            font-style: italic;
+        }
+        .datalog-declaration {
+            color: #3545b0;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <h1>Advanced Diff for Classes Deemed to be Equivalent</h1>
+    <div>
+        The textual representations of the projected IDBs generated for the classes compared are the same.
+        Projected means that some elements like ids and instruction counters that are influenced by normalisation rules are ignored.
+        This report provides details of the logic applied to establish equivalence.
+    </div>
+    <h2>Table of Content</h2>
+
+    <ol>
+        <li><a href="#header-file-locations">File locations</a></li>
+        <li><a href="#header-normalisations">Normalisations Performed to Establish Equivalence</a></li>
+        <li><a href="#header-rules">Rules Used to Compute the Normalised Database (IDB) - Rule IDs Highlighted</a></li>
+        <li><a href="#header-edb1">EDB1: Database Extracted from Jar1</a></li>
+        <li><a href="#header-edb2">EDB2: Database Extracted from Jar2</a></li>
+    </ol>
+
+    <h2><a id="header-file-locations">File locations</a></h2>
+    <p/>
+
+    <table>
+        <tbody>
+        <tr><th>key</th><th>value</th></tr>
+        <tr><td class="key">class:</td><td id="class" class="value"></td></tr>
+        <tr><td class="key">jar1:</td><td id="jar1" class="value"></td></tr>
+        <tr><td class="key">jar2:</td><td id="jar2" class="value"></td></tr>
+        <tr><td class="key">EDB extracted from jar1:</td><td id="edb1" class="value"></td></tr>
+        <tr><td class="key">EDB extracted from jar2:</td><td id="edb2" class="value"></td></tr>
+        <tr><td class="key">IDB computed for jar1:</td><td id="idb1" class="value"></td></tr>
+        <tr><td class="key">IDB computed for jar2:</td><td id="idb2" class="value"></td></tr>
+        <tr><td class="key">IDB from jar1 as text:</td><td id="idb1txt" class="value"></td></tr>
+        <tr><td class="key">IDB from jar2 as text:</td><td id="idb2txt" class="value"></td></tr>
+        <tr><td class="key">projected IDB from jar1:</td><td id="pidb1txt" class="value"></td></tr>
+        <tr><td class="key">projected IDB from jar2:</td><td id="pidb2txt" class="value"></td></tr>
+        </tbody>
+    </table>
+
+    <h2><a id="header-normalisations">Normalisations Performed to Establish Equivalence</a></h2>
+    <div id="diffs"></div>
+
+    <h2><a id="header-rules">Rules Used to Compute the Normalised Database (IDB) - Rule IDs Highlighted</a></h2>
+    <div id="rules" style="margin-left: 20px" ></div>
+
+    <h2><a id="header-edb1">EDB1: Database Extracted from Jar1</a></h2>
+    <div id="edb1IL"></div>
+
+    <h2><a id="header-edb2">EDB2: Database Extracted from Jar2</a></h2>
+    <div id="edb2IL"></div>
+
+</body>
+</html>

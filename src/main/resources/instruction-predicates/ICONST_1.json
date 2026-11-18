@@ -1,0 +1,23 @@
+{
+  "name": "ICONST_1",
+  "opCode": 4,
+  "slots": [
+    {
+      "name": "factid",
+      "type": "SYMBOL",
+      "jtype": "java.lang.String"
+    },
+    {
+      "name": "methodid",
+      "type": "SYMBOL",
+      "jtype": "java.lang.String"
+    },
+    {
+      "name": "instructioncounter",
+      "type": "NUMBER",
+      "jtype": "int"
+    }
+  ],
+  "id": "e11a5cf9-57ac-42e2-befd-78d6c47f29c7",
+  "asmNodeType": "org.objectweb.asm.tree.InsnNode"
+}

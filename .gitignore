@@ -1,0 +1,17 @@
+db
+target
+inferred-instructions-fact-factories
+inferred-instruction-predicates
+.benchmarks
+merged-facts-and-rules.souffle
+trainingdata
+.tests
+.tmp
+idb.txt
+evaluation/
+sandbox
+examples
+demo
+evaluation-comparative
+/perhaps-unsound/
+examples2
